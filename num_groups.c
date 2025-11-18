@@ -1,6 +1,6 @@
 /*
 Program written by Andrew Sauer
-Calculates the number of groups of size n (would not reccomend n > 8)
+Calculates the number of groups of size n (would not reccomend n > 5 until multithreading support and math magic are added)
 Run with "./num_groups n"
 */
 #include <stdio.h>
@@ -14,7 +14,11 @@ typedef struct TableNode {
 
 TableNode *seen_head = NULL;
 
-/* Function to check if a number is prime */
+/*
+ * Function to check if a number is prime
+ * This would be horrible if it was possible to run large n
+ * Fortunately the rest of the code is FAR less efficient so it does not matter
+ */
 int is_prime(int n) {
     int i;
     if (n <= 1) {
@@ -38,21 +42,6 @@ int is_prime_square(int n) {
         p++;
     }
     return 0;
-}
-
-/* Check if the table is closed */
-int check_closure(int **table, int n) {
-    int i;
-    int j;
-
-    for (i = 0; i < n; i++) {
-        for (j = 0; j < n; j++) {
-            if (table[i][j] < 0 || table[i][j] >= n) {
-                return 0;
-            }
-        }
-    }
-    return 1;
 }
 
 /* Check if an element e is an identity */
@@ -106,7 +95,7 @@ int check_associativity(int **table, int n) {
     int a;
     int b;
     int c;
-
+    /* holy nested loops! */
     for (a = 0; a < n; a++) {
         for (b = 0; b < n; b++) {
             for (c = 0; c < n; c++) {
@@ -129,6 +118,7 @@ void flatten_table(int **table, int n, int *flat) {
         }
     }
 }
+
 
 int next_permutation(int *arr, int length) {
     int pivot_index = length - 2;
@@ -164,78 +154,120 @@ int next_permutation(int *arr, int length) {
 }
 
 
-/* Check if a Cayley table is isomorphic to any previously stored table) */
-int is_new_group(int **table, int n) {
-    /* Flatten current table for comparison */
-    int *flat_current = malloc(n * n * sizeof(int));
-    int row, col, k;
-    for (row = 0; row < n; row++) {
-        for (col = 0; col < n; col++) {
-            flat_current[row * n + col] = table[row][col];
+
+/*
+ * This function is essentially straight ChatGPT as I got lost stuck
+ *
+ Compute a canonical flattened representation of a Cayley table up to isomorphism
+ under relabelings that send the identity element to 0. This is done by
+ considering all permutations of the non-identity elements, permuting rows,
+ columns, and entries accordingly, and selecting the lexicographically smallest
+ flattened table.
+ Assumes the provided table is a valid group table (has identity, inverses, associativity).
+*/
+void compute_canonical_flat(int **table, int n, int *out_flat) {
+    int i, j, a;
+
+    int e = find_identity(table, n);
+    if (e == -1) {
+        /* Fallback: just flatten as-is (should not happen for valid groups) */
+        flatten_table(table, n, out_flat);
+        return;
+    }
+
+    /* Build list of elements other than identity */
+    int m = n - 1;
+    int *others = (int *)malloc(sizeof(int) * m);
+    int idx = 0;
+    for (a = 0; a < n; a++) {
+        if (a != e) {
+            others[idx++] = a;
         }
     }
-    /* Check against all previously stored tables */
-    TableNode *cur_node = seen_head;
-    while (cur_node != NULL) {
-        int match = 1;
-        for (k = 0; k < n * n; k++) {
-            if (cur_node->flat[k] != flat_current[k]) {
-                match = 0;
-            }
-        }
-        if (match == 1) {
-            free(flat_current);
-            return 0;
-        }
-        cur_node = cur_node->next;
-    }
-    free(flat_current);
-    /* If n == 1 or n == 2, no permutations needed */
-    if (n == 1 || n == 2) {
-        return 1;
-    }
-    /* Prepare permutation array for non-identity elements (1..n-1) */
-    int perm[n - 1];
-    for (k = 0; k < n - 1; k++) {
-        perm[k] = k;
-    }
-    /* Generate all permutations and check for duplicates */
+
+    /* permutation over positions 0..m-1 that assigns new labels 1..n-1 */
+    int *perm = (int *)malloc(sizeof(int) * m);
+    for (i = 0; i < m; i++) perm[i] = i; /* start with 0..m-1 */
+
+    /* Working buffers */
+    int *best = (int *)malloc(sizeof(int) * n * n);
+    int *candidate = (int *)malloc(sizeof(int) * n * n);
+    int best_set = 0;
+
     do {
-        int *flat_copy = malloc(n * n * sizeof(int));
-        for (row = 0; row < n; row++) {
-            for (col = 0; col < n; col++) {
-                int val = table[row][col];
-                int new_val;
-                if (val == 0) {
-                    new_val = 0;
-                } else {
-                    new_val = perm[val - 1] + 1;
-                }
-                flat_copy[row * n + col] = new_val;
-            }
-        }
-        /* Compare permuted table to all stored tables */
-        cur_node = seen_head;
-        int duplicate = 0;
-        while (cur_node != NULL) {
-            int match = 1;
-            for (k = 0; k < n * n; k++) {
-                if (cur_node->flat[k] != flat_copy[k]) {
-                    match = 0;
-                }
-            }
-            if (match == 1) {
-                duplicate = 1;
-            }
-            cur_node = cur_node->next;
-        }
-        free(flat_copy);
-        if (duplicate == 1) {
-            return 0;
+        /* Build mapping old -> new index in 0..n-1 with identity mapped to 0 */
+        int *map_old_to_new = (int *)malloc(sizeof(int) * n);
+        map_old_to_new[e] = 0;
+        for (i = 0; i < m; i++) {
+            int old_elem = others[i];
+            int new_label = perm[i] + 1; /* labels 1..n-1 */
+            map_old_to_new[old_elem] = new_label;
         }
 
-    } while (next_permutation(perm, n - 1) == 1);
+        /* Produce fully permuted table and flatten to candidate (also wastes time) */
+        for (i = 0; i < n; i++) {
+            int ni = map_old_to_new[i];
+            for (j = 0; j < n; j++) {
+                int nj = map_old_to_new[j];
+                int val = table[i][j];
+                int nv = map_old_to_new[val];
+                candidate[ni * n + nj] = nv;
+            }
+        }
 
+        /* Update best if this candidate is lexicographically smaller */
+        if (!best_set) {
+            memcpy(best, candidate, sizeof(int) * n * n);
+            best_set = 1;
+        } else {
+            int better = 0;
+            for (i = 0; i < n * n; i++) {
+                if (candidate[i] < best[i]) { better = 1; break; }
+                if (candidate[i] > best[i]) { break; }
+            }
+            if (better) {
+                memcpy(best, candidate, sizeof(int) * n * n);
+            }
+        }
+
+        free(map_old_to_new);
+    } while (next_permutation(perm, m));
+
+    memcpy(out_flat, best, sizeof(int) * n * n);
+
+    free(others);
+    free(perm);
+    free(best);
+    free(candidate);
+}
+
+/* Check if a Cayley table is isomorphic to any previously stored table */
+int is_new_group(int **table, int n) {
+    int i;
+    /* Compute canonical flat for this table */
+    int *canon = (int *)malloc(sizeof(int) * n * n);
+    if (canon == NULL) {
+        printf("Memory allocation failed.\n");
+        exit(1);
+    }
+    compute_canonical_flat(table, n, canon);
+
+    /* compare with all stored canonical tables */
+    TableNode *cur = seen_head;
+    while (cur != NULL) {
+        int match = 1;
+        for (i = 0; i < n * n; i++) {
+            if (cur->flat[i] != canon[i]) { match = 0; break; }
+        }
+        if (match) {
+            free(canon);
+            return 0; /* not new */
+        }
+        cur = cur->next;
+    }
+
+    /* if no match found, it is new */
+    free(canon);
     return 1;
 }
 
@@ -270,10 +302,6 @@ int generate_tables(int **table, int n, int row, int col, int must_be_abelian, i
     int val;
 
     if (row == n) {
-        if (!check_closure(table, n)) {
-            return 0;
-        }
-
         if (must_be_abelian) {
             int i;
             int j;
@@ -299,7 +327,8 @@ int generate_tables(int **table, int n, int row, int col, int must_be_abelian, i
 
         if (is_new_group(table, n)) {
             int *flat = malloc(n * n * sizeof(int));
-            flatten_table(table, n, flat);
+            /* store canonical representative so that future comparisons match */
+            compute_canonical_flat(table, n, flat);
             store_table(flat, n);
             (*count)++;
             printf("Valid group #%d:\n", *count);
@@ -347,7 +376,7 @@ int main(int argc, char *argv[]) {
     n = atoi(argv[1]);
 
     if (n <= 0) {
-        printf("Error: n must be positive.\n");
+        printf("Error: n must be a positive integer.\n");
         return 1;
     }
 
@@ -359,11 +388,17 @@ int main(int argc, char *argv[]) {
             printf("Memory allocation failed.\n");
             return 1;
         }
-        memset(table[i], 0, n * sizeof(int));
+
+        // initialize each row to zero
+        for (int j = 0; j < n; j++) {
+            table[i][j] = 0;
+        }
     }
+
 
     if (is_prime(n) || is_prime_square(n)) {
         must_be_abelian = 1;
+        printf("n is prime or prime squared, all groups must be abelian.");
     }
     else {
         must_be_abelian = 0;
